@@ -1,3 +1,11 @@
+npm install
+```
+
+3. Create a `.env` file with your Discord bot token:
+```env
 DISCORD_TOKEN=your_bot_token
-   TRIGGER_CHANNEL_ID=your_trigger_channel_id (optional - can be set with /settrigger)
-   CATEGORY_ID=your_category_id (optional - can be set with /setcategory)
+```
+
+4. Run the bot:
+```bash
+node bot.js

@@ -106,6 +106,19 @@ class VoiceChannelBot {
 
                 // Handle user joining trigger channel
                 if (newState.channelId === Config.TRIGGER_CHANNEL_ID) {
+                    // First check if both required settings are configured
+                    if (!Config.TRIGGER_CHANNEL_ID || !Config.CATEGORY_ID) {
+                        const guild = newState.guild;
+                        const owner = await guild.fetchOwner();
+                        try {
+                            await owner.send('⚠️ Bot configuration is incomplete. Please use `/settrigger` and `/setcategory` commands to set up the bot.');
+                        } catch (error) {
+                            console.warn('Could not send DM to server owner about incomplete configuration');
+                        }
+                        console.warn('Bot is not fully configured. Both trigger channel and category must be set.');
+                        return;
+                    }
+
                     console.log(`User ${newState.member.user.username} joined trigger channel`);
 
                     // Check bot permissions before proceeding
@@ -115,10 +128,17 @@ class VoiceChannelBot {
                         return;
                     }
 
+                    // Additional check to ensure category still exists
+                    const category = await newState.guild.channels.fetch(Config.CATEGORY_ID).catch(() => null);
+                    if (!category) {
+                        console.error('Configured category no longer exists');
+                        return;
+                    }
+
                     const tempChannel = await newState.guild.channels.create({
-                        name: `channel-${newState.member.user.id}`,
+                        name: `${Config.TEMP_CHANNEL_PREFIX}${newState.member.user.username}`,
                         type: ChannelType.GuildVoice,
-                        parent: Config.CATEGORY_ID ? Config.CATEGORY_ID : null,
+                        parent: Config.CATEGORY_ID,
                         permissionOverwrites: [
                             {
                                 id: newState.member.id,
@@ -199,7 +219,10 @@ class VoiceChannelBot {
                             return;
                         }
                         Config.setTriggerChannelId(channel.id);
-                        await interaction.reply(`Trigger channel set to: ${channel.name}`);
+                        const triggerResponse = Config.isConfigured()
+                            ? `Trigger channel set to: ${channel.name}\nBot is now fully configured and ready to use!`
+                            : `Trigger channel set to: ${channel.name}\nNote: Category still needs to be set using /setcategory`;
+                        await interaction.reply(triggerResponse);
                         break;
 
                     case 'setcategory':
@@ -209,7 +232,10 @@ class VoiceChannelBot {
                             return;
                         }
                         Config.setCategoryId(category.id);
-                        await interaction.reply(`Category set to: ${category.name}`);
+                        const categoryResponse = Config.isConfigured()
+                            ? `Category set to: ${category.name}\nBot is now fully configured and ready to use!`
+                            : `Category set to: ${category.name}\nNote: Trigger channel still needs to be set using /settrigger`;
+                        await interaction.reply(categoryResponse);
                         break;
 
                     case 'config':
@@ -217,10 +243,14 @@ class VoiceChannelBot {
                         const categoryChannel = Config.CATEGORY_ID ?
                             interaction.guild.channels.cache.get(Config.CATEGORY_ID) : null;
 
+                        const configStatus = Config.isConfigured() ? '✅ Bot is fully configured' : '⚠️ Bot configuration incomplete';
                         await interaction.reply({
-                            content: `Current configuration:
-                            Trigger Channel: ${triggerChannel ? triggerChannel.name : 'Not set'}
-                            Category: ${categoryChannel ? categoryChannel.name : 'Not set'}`,
+                            content: `${configStatus}
+Current configuration:
+Trigger Channel: ${triggerChannel ? `${triggerChannel.name} ✅` : 'Not set ❌'}
+Category: ${categoryChannel ? `${categoryChannel.name} ✅` : 'Not set ❌'}
+
+${!Config.isConfigured() ? 'Use /settrigger and /setcategory to complete configuration.' : ''}`,
                             ephemeral: true
                         });
                         break;

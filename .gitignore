@@ -1,0 +1,26 @@
+# Environment variables
+.env
+
+# Dependencies
+node_modules/
+__pycache__/
+
+# Logs
+*.log
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Replit specific
+.replit
+replit.nix
+.config/
+.upm/
+.cache/
+.breakpoints
+
+# Package files
+package-lock.json
