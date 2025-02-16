@@ -108,6 +108,13 @@ class VoiceChannelBot {
                 if (newState.channelId === Config.TRIGGER_CHANNEL_ID) {
                     console.log(`User ${newState.member.user.username} joined trigger channel`);
 
+                    // Check bot permissions before proceeding
+                    const botMember = await newState.guild.members.fetch(this.client.user.id);
+                    if (!botMember.permissions.has(PermissionFlagsBits.MoveMembers)) {
+                        console.error('Bot lacks Move Members permission');
+                        return;
+                    }
+
                     const tempChannel = await newState.guild.channels.create({
                         name: `channel-${newState.member.user.id}`,
                         type: ChannelType.GuildVoice,
@@ -115,25 +122,59 @@ class VoiceChannelBot {
                         permissionOverwrites: [
                             {
                                 id: newState.member.id,
-                                allow: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.MoveMembers]
+                                allow: [
+                                    PermissionFlagsBits.Connect,
+                                    PermissionFlagsBits.Speak,
+                                    PermissionFlagsBits.ManageChannels,
+                                    PermissionFlagsBits.MoveMembers
+                                ]
+                            },
+                            {
+                                id: this.client.user.id,
+                                allow: [
+                                    PermissionFlagsBits.Connect,
+                                    PermissionFlagsBits.Speak,
+                                    PermissionFlagsBits.ManageChannels,
+                                    PermissionFlagsBits.MoveMembers,
+                                    PermissionFlagsBits.ViewChannel
+                                ]
+                            },
+                            {
+                                id: newState.guild.id,
+                                allow: [PermissionFlagsBits.Connect, PermissionFlagsBits.Speak]
                             }
                         ]
                     });
 
-                    // Move user to the new channel
-                    await newState.setChannel(tempChannel);
-                    console.log(`Created and moved user to channel: ${tempChannel.name}`);
+                    console.log(`Created temporary channel: ${tempChannel.name}`);
+
+                    try {
+                        // Try to move the user
+                        await newState.setChannel(tempChannel.id);
+                        console.log(`Successfully moved user to channel: ${tempChannel.name}`);
+                    } catch (moveError) {
+                        console.error('Error moving user:', moveError);
+                        // If we can't move the user, clean up the channel
+                        await tempChannel.delete().catch(console.error);
+                        return;
+                    }
 
                     // Set up cleanup interval
                     const checkEmpty = setInterval(async () => {
-                        const channel = await newState.guild.channels.fetch(tempChannel.id).catch(() => null);
-                        if (!channel || channel.members.size === 0) {
-                            await channel?.delete('Channel empty - auto cleanup');
+                        try {
+                            const channel = await newState.guild.channels.fetch(tempChannel.id).catch(() => null);
+                            if (!channel || channel.members.size === 0) {
+                                await channel?.delete().catch(console.error);
+                                clearInterval(checkEmpty);
+                                this.temporaryChannels.delete(tempChannel.id);
+                                console.log(`Deleted empty channel: ${tempChannel.name}`);
+                            }
+                        } catch (error) {
+                            console.error('Error in cleanup interval:', error);
                             clearInterval(checkEmpty);
                             this.temporaryChannels.delete(tempChannel.id);
-                            console.log(`Deleted empty channel: ${tempChannel.name}`);
                         }
-                    }, 5000); // Check every 5 seconds
+                    }, 5000);
 
                     this.temporaryChannels.set(tempChannel.id, checkEmpty);
                 }
@@ -141,7 +182,7 @@ class VoiceChannelBot {
             } catch (error) {
                 console.error('Error in voice state update:', error);
                 if (error.code === 50013) {
-                    console.error('Missing permissions for voice channel operations');
+                    console.error('Missing permissions for voice channel operations. Required permissions: MOVE_MEMBERS, MANAGE_CHANNELS');
                 }
             }
         });
