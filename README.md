@@ -1,4 +1,5 @@
 git clone https://github.com/zzazuu/discord-auto-channel-bot.git
+cd discord-auto-channel-bot
 ```
 
 2. Install dependencies:
@@ -11,6 +12,6 @@ npm install
 DISCORD_TOKEN=your_bot_token
 ```
 
-4. Run the bot:
+4. Start the bot:
 ```bash
 node bot.js
