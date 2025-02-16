@@ -104,7 +104,13 @@ class VoiceChannelBot {
                 // Ignore bot's own voice state updates
                 if (oldState.member.user.bot) return;
 
-                // Handle user joining trigger channel
+                // Add detailed logging
+                console.log(`Voice state update for user ${oldState.member.user.username}:`);
+                console.log(`- Old channel: ${oldState.channelId || 'None'}`);
+                console.log(`- New channel: ${newState.channelId || 'None'}`);
+                console.log(`- Trigger channel: ${Config.TRIGGER_CHANNEL_ID}`);
+
+                // Check if user is joining trigger channel
                 if (newState.channelId === Config.TRIGGER_CHANNEL_ID) {
                     // First check if both required settings are configured
                     if (!Config.TRIGGER_CHANNEL_ID || !Config.CATEGORY_ID) {
@@ -119,16 +125,27 @@ class VoiceChannelBot {
                         return;
                     }
 
-                    console.log(`User ${newState.member.user.username} joined trigger channel`);
+                    // Check if user already has a temporary channel
+                    const existingChannel = Array.from(this.temporaryChannels.keys())
+                        .find(channelId => {
+                            const channel = newState.guild.channels.cache.get(channelId);
+                            return channel && channel.name.includes(newState.member.user.username);
+                        });
 
-                    // Check bot permissions before proceeding
+                    if (existingChannel) {
+                        console.log(`User ${newState.member.user.username} already has a temporary channel. Skipping creation.`);
+                        return;
+                    }
+
+                    console.log(`Creating new temporary channel for user ${newState.member.user.username}`);
+
+                    // Rest of the channel creation logic remains the same
                     const botMember = await newState.guild.members.fetch(this.client.user.id);
                     if (!botMember.permissions.has(PermissionFlagsBits.MoveMembers)) {
                         console.error('Bot lacks Move Members permission');
                         return;
                     }
 
-                    // Additional check to ensure category still exists
                     const category = await newState.guild.channels.fetch(Config.CATEGORY_ID).catch(() => null);
                     if (!category) {
                         console.error('Configured category no longer exists');
@@ -169,17 +186,14 @@ class VoiceChannelBot {
                     console.log(`Created temporary channel: ${tempChannel.name}`);
 
                     try {
-                        // Try to move the user
                         await newState.setChannel(tempChannel.id);
                         console.log(`Successfully moved user to channel: ${tempChannel.name}`);
                     } catch (moveError) {
                         console.error('Error moving user:', moveError);
-                        // If we can't move the user, clean up the channel
                         await tempChannel.delete().catch(console.error);
                         return;
                     }
 
-                    // Set up cleanup interval
                     const checkEmpty = setInterval(async () => {
                         try {
                             const channel = await newState.guild.channels.fetch(tempChannel.id).catch(() => null);
