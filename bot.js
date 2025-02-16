@@ -1,6 +1,5 @@
-const { Client, GatewayIntentBits, PermissionFlagsBits, ApplicationCommandOptionType, REST, Routes, OAuth2Routes } = require('discord.js');
+const { Client, GatewayIntentBits, PermissionFlagsBits, ApplicationCommandOptionType, REST, Routes, Events, ChannelType } = require('discord.js');
 const Config = require('./config');
-const ChannelManager = require('./channelManager');
 
 class VoiceChannelBot {
     constructor() {
@@ -12,7 +11,7 @@ class VoiceChannelBot {
             ]
         });
 
-        this.channelManager = new ChannelManager();
+        this.temporaryChannels = new Map(); // Store channel IDs and their interval handlers
         this.setupEventHandlers();
     }
 
@@ -26,8 +25,8 @@ class VoiceChannelBot {
 
             const missingPermissions = requiredPermissions.filter(perm => !botMember.permissions.has(perm));
             if (missingPermissions.length > 0) {
-                const missingPermsNames = missingPermissions.map(perm => 
-                    Object.keys(PermissionFlagsBits).find(key => 
+                const missingPermsNames = missingPermissions.map(perm =>
+                    Object.keys(PermissionFlagsBits).find(key =>
                         PermissionFlagsBits[key] === perm)
                 ).join(', ');
 
@@ -48,10 +47,6 @@ class VoiceChannelBot {
     async registerCommands() {
         const commands = [
             {
-                name: 'status',
-                description: 'Check bot status and temporary channel count'
-            },
-            {
                 name: 'settrigger',
                 description: 'Set the trigger channel ID (Admin only)',
                 options: [{
@@ -60,7 +55,7 @@ class VoiceChannelBot {
                     type: ApplicationCommandOptionType.Channel,
                     required: true
                 }],
-                defaultMemberPermissions: PermissionFlagsBits.Administrator
+                defaultMemberPermissions: PermissionFlagsBits.Administrator.toString()
             },
             {
                 name: 'setcategory',
@@ -71,12 +66,12 @@ class VoiceChannelBot {
                     type: ApplicationCommandOptionType.Channel,
                     required: true
                 }],
-                defaultMemberPermissions: PermissionFlagsBits.Administrator
+                defaultMemberPermissions: PermissionFlagsBits.Administrator.toString()
             },
             {
                 name: 'config',
                 description: 'View current configuration (Admin only)',
-                defaultMemberPermissions: PermissionFlagsBits.Administrator
+                defaultMemberPermissions: PermissionFlagsBits.Administrator.toString()
             }
         ];
 
@@ -84,13 +79,9 @@ class VoiceChannelBot {
             console.log('Started refreshing application (/) commands.');
             const rest = new REST({ version: '10' }).setToken(Config.TOKEN);
 
-            // Register commands globally
             await rest.put(
-                Routes.applicationCommands(this.client.user.id),
-                { body: commands.map(cmd => ({
-                    ...cmd,
-                    defaultMemberPermissions: cmd.defaultMemberPermissions?.toString()
-                }))}
+                Routes.applicationCommands(this.client.user.id.toString()),
+                { body: commands }
             );
 
             console.log('Successfully reloaded application (/) commands.');
@@ -103,22 +94,12 @@ class VoiceChannelBot {
     }
 
     setupEventHandlers() {
-        this.client.once('ready', async () => {
+        this.client.once('ready', () => {
             console.log(`Logged in as ${this.client.user.tag}`);
-
-            for (const guild of this.client.guilds.cache.values()) {
-                const hasPermissions = await this.checkBotPermissions(guild);
-                if (!hasPermissions) {
-                    console.error(`Missing required permissions in guild: ${guild.name}`);
-                    continue;
-                }
-                await this.channelManager.cleanupOrphanedChannels(guild);
-            }
-
-            await this.registerCommands();
+            this.registerCommands();
         });
 
-        this.client.on('voiceStateUpdate', async (oldState, newState) => {
+        this.client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
             try {
                 // Ignore bot's own voice state updates
                 if (oldState.member.user.bot) return;
@@ -126,40 +107,41 @@ class VoiceChannelBot {
                 // Handle user joining trigger channel
                 if (newState.channelId === Config.TRIGGER_CHANNEL_ID) {
                     console.log(`User ${newState.member.user.username} joined trigger channel`);
-                    const tempChannel = await this.channelManager.createTemporaryChannel(
-                        newState.guild,
-                        newState.member
-                    );
-                    if (tempChannel) {
-                        try {
-                            await newState.member.voice.setChannel(tempChannel);
-                            console.log(`Moved ${newState.member.user.username} to temporary channel ${tempChannel.name}`);
-                        } catch (moveError) {
-                            console.error(`Failed to move member to temporary channel:`, moveError);
-                            if (moveError.code === 50013) {
-                                await tempChannel.send('Failed to move user - missing permissions');
+
+                    const tempChannel = await newState.guild.channels.create({
+                        name: `channel-${newState.member.user.id}`,
+                        type: ChannelType.GuildVoice,
+                        parent: Config.CATEGORY_ID ? Config.CATEGORY_ID : null,
+                        permissionOverwrites: [
+                            {
+                                id: newState.member.id,
+                                allow: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.MoveMembers]
                             }
+                        ]
+                    });
+
+                    // Move user to the new channel
+                    await newState.setChannel(tempChannel);
+                    console.log(`Created and moved user to channel: ${tempChannel.name}`);
+
+                    // Set up cleanup interval
+                    const checkEmpty = setInterval(async () => {
+                        const channel = await newState.guild.channels.fetch(tempChannel.id).catch(() => null);
+                        if (!channel || channel.members.size === 0) {
+                            await channel?.delete('Channel empty - auto cleanup');
+                            clearInterval(checkEmpty);
+                            this.temporaryChannels.delete(tempChannel.id);
+                            console.log(`Deleted empty channel: ${tempChannel.name}`);
                         }
-                    }
+                    }, 5000); // Check every 5 seconds
+
+                    this.temporaryChannels.set(tempChannel.id, checkEmpty);
                 }
 
-                // Handle user leaving any channel
-                if (oldState.channel && this.channelManager.tempChannels.has(oldState.channelId)) {
-                    // Check if channel is empty
-                    const channel = oldState.guild.channels.cache.get(oldState.channelId);
-                    if (channel && channel.members.size === 0) {
-                        try {
-                            await this.channelManager.deleteTemporaryChannel(channel);
-                            console.log(`Channel ${channel.name} deleted due to being empty`);
-                        } catch (deleteError) {
-                            console.error(`Failed to delete temporary channel:`, deleteError);
-                        }
-                    }
-                }
             } catch (error) {
                 console.error('Error in voice state update:', error);
                 if (error.code === 50013) {
-                    console.error('Missing permissions for voice channel operations. Please check bot permissions.');
+                    console.error('Missing permissions for voice channel operations');
                 }
             }
         });
@@ -169,14 +151,9 @@ class VoiceChannelBot {
 
             try {
                 switch (interaction.commandName) {
-                    case 'status':
-                        const tempChannelCount = this.channelManager.tempChannels.size;
-                        await interaction.reply(`Bot is running. Current temporary channels: ${tempChannelCount}`);
-                        break;
-
                     case 'settrigger':
                         const channel = interaction.options.getChannel('channel');
-                        if (channel.type !== 2) { // 2 is GUILD_VOICE
+                        if (channel.type !== ChannelType.GuildVoice) {
                             await interaction.reply({ content: 'Please select a voice channel.', ephemeral: true });
                             return;
                         }
@@ -186,7 +163,7 @@ class VoiceChannelBot {
 
                     case 'setcategory':
                         const category = interaction.options.getChannel('category');
-                        if (category.type !== 4) { // 4 is GUILD_CATEGORY
+                        if (category.type !== ChannelType.GuildCategory) {
                             await interaction.reply({ content: 'Please select a category.', ephemeral: true });
                             return;
                         }
@@ -195,8 +172,9 @@ class VoiceChannelBot {
                         break;
 
                     case 'config':
-                        const triggerChannel = await interaction.guild.channels.fetch(Config.TRIGGER_CHANNEL_ID).catch(() => null);
-                        const categoryChannel = Config.CATEGORY_ID ? await interaction.guild.channels.fetch(Config.CATEGORY_ID).catch(() => null) : null;
+                        const triggerChannel = interaction.guild.channels.cache.get(Config.TRIGGER_CHANNEL_ID);
+                        const categoryChannel = Config.CATEGORY_ID ?
+                            interaction.guild.channels.cache.get(Config.CATEGORY_ID) : null;
 
                         await interaction.reply({
                             content: `Current configuration:
@@ -208,7 +186,10 @@ class VoiceChannelBot {
                 }
             } catch (error) {
                 console.error('Error handling command:', error);
-                await interaction.reply({ content: 'An error occurred while executing the command.', ephemeral: true });
+                await interaction.reply({
+                    content: 'An error occurred while executing the command.',
+                    ephemeral: true
+                });
             }
         });
 
@@ -221,11 +202,6 @@ class VoiceChannelBot {
         });
     }
 
-    async cleanupTemporaryChannels() {
-        for (const guild of this.client.guilds.cache.values()) {
-            await this.channelManager.cleanupOrphanedChannels(guild);
-        }
-    }
 
     start() {
         if (!Config.TOKEN) {
@@ -234,17 +210,11 @@ class VoiceChannelBot {
         }
 
         this.client.login(Config.TOKEN).catch(error => {
-            console.error('Failed to login:', error.message);
-            if (error.code === 'TokenInvalid') {
-                console.error('The provided Discord token is invalid. Please check your configuration.');
-            } else if (error.message.includes('disallowed intents')) {
-                console.error('Please enable the required intents in the Discord Developer Portal');
-            }
+            console.error('Failed to login:', error);
             process.exit(1);
         });
     }
 }
 
-// Start the bot
 const bot = new VoiceChannelBot();
 bot.start();
