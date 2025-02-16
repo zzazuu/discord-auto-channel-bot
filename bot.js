@@ -139,12 +139,37 @@ class VoiceChannelBot {
 
                     console.log(`Creating new temporary channel for user ${newState.member.user.username}`);
 
-                    // Rest of the channel creation logic remains the same
-                    const botMember = await newState.guild.members.fetch(this.client.user.id);
-                    if (!botMember.permissions.has(PermissionFlagsBits.MoveMembers)) {
-                        console.error('Bot lacks Move Members permission');
-                        return;
-                    }
+                    // Get permissions from trigger channel
+                    const triggerChannel = await newState.guild.channels.fetch(Config.TRIGGER_CHANNEL_ID);
+                    const basePermissions = triggerChannel.permissionOverwrites.cache.map(overwrite => ({
+                        id: overwrite.id,
+                        allow: overwrite.allow,
+                        deny: overwrite.deny,
+                        type: overwrite.type
+                    }));
+
+                    // Add bot-specific permissions
+                    const botPermissions = {
+                        id: this.client.user.id,
+                        allow: [
+                            PermissionFlagsBits.Connect,
+                            PermissionFlagsBits.Speak,
+                            PermissionFlagsBits.ManageChannels,
+                            PermissionFlagsBits.MoveMembers,
+                            PermissionFlagsBits.ViewChannel
+                        ]
+                    };
+
+                    // Add channel creator permissions
+                    const creatorPermissions = {
+                        id: newState.member.id,
+                        allow: [
+                            PermissionFlagsBits.Connect,
+                            PermissionFlagsBits.Speak,
+                            PermissionFlagsBits.ManageChannels,
+                            PermissionFlagsBits.MoveMembers
+                        ]
+                    };
 
                     const category = await newState.guild.channels.fetch(Config.CATEGORY_ID).catch(() => null);
                     if (!category) {
@@ -157,29 +182,9 @@ class VoiceChannelBot {
                         type: ChannelType.GuildVoice,
                         parent: Config.CATEGORY_ID,
                         permissionOverwrites: [
-                            {
-                                id: newState.member.id,
-                                allow: [
-                                    PermissionFlagsBits.Connect,
-                                    PermissionFlagsBits.Speak,
-                                    PermissionFlagsBits.ManageChannels,
-                                    PermissionFlagsBits.MoveMembers
-                                ]
-                            },
-                            {
-                                id: this.client.user.id,
-                                allow: [
-                                    PermissionFlagsBits.Connect,
-                                    PermissionFlagsBits.Speak,
-                                    PermissionFlagsBits.ManageChannels,
-                                    PermissionFlagsBits.MoveMembers,
-                                    PermissionFlagsBits.ViewChannel
-                                ]
-                            },
-                            {
-                                id: newState.guild.id,
-                                allow: [PermissionFlagsBits.Connect, PermissionFlagsBits.Speak]
-                            }
+                            ...basePermissions,
+                            botPermissions,
+                            creatorPermissions
                         ]
                     });
 
