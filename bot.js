@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, PermissionFlagsBits, ApplicationCommandOptionType, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, PermissionFlagsBits, ApplicationCommandOptionType, REST, Routes, OAuth2Routes } = require('discord.js');
 const Config = require('./config');
 const ChannelManager = require('./channelManager');
 
@@ -7,12 +7,42 @@ class VoiceChannelBot {
         this.client = new Client({
             intents: [
                 GatewayIntentBits.Guilds,
-                GatewayIntentBits.GuildVoiceStates
+                GatewayIntentBits.GuildVoiceStates,
+                GatewayIntentBits.GuildMessages
             ]
         });
 
         this.channelManager = new ChannelManager();
         this.setupEventHandlers();
+    }
+
+    async checkBotPermissions(guild) {
+        try {
+            const botMember = await guild.members.fetch(guild.client.user.id);
+            const requiredPermissions = [
+                PermissionFlagsBits.ManageChannels,
+                PermissionFlagsBits.MoveMembers
+            ];
+
+            const missingPermissions = requiredPermissions.filter(perm => !botMember.permissions.has(perm));
+            if (missingPermissions.length > 0) {
+                const missingPermsNames = missingPermissions.map(perm => 
+                    Object.keys(PermissionFlagsBits).find(key => 
+                        PermissionFlagsBits[key] === perm)
+                ).join(', ');
+
+                const inviteLink = `https://discord.com/api/oauth2/authorize?client_id=${this.client.user.id}&permissions=16780288&scope=bot%20applications.commands`;
+
+                console.error(`Bot is missing required permissions in ${guild.name}: ${missingPermsNames}`);
+                console.error('Please update bot permissions in server settings or use this invite link to add the bot with correct permissions:');
+                console.error(inviteLink);
+                return false;
+            }
+            return true;
+        } catch (error) {
+            console.error(`Error checking permissions in guild ${guild.name}:`, error);
+            return false;
+        }
     }
 
     async registerCommands() {
@@ -75,7 +105,16 @@ class VoiceChannelBot {
     setupEventHandlers() {
         this.client.once('ready', async () => {
             console.log(`Logged in as ${this.client.user.tag}`);
-            await this.cleanupTemporaryChannels();
+
+            for (const guild of this.client.guilds.cache.values()) {
+                const hasPermissions = await this.checkBotPermissions(guild);
+                if (!hasPermissions) {
+                    console.error(`Missing required permissions in guild: ${guild.name}`);
+                    continue;
+                }
+                await this.channelManager.cleanupOrphanedChannels(guild);
+            }
+
             await this.registerCommands();
         });
 
@@ -86,22 +125,35 @@ class VoiceChannelBot {
 
                 // Handle user joining trigger channel
                 if (newState.channelId === Config.TRIGGER_CHANNEL_ID) {
+                    console.log(`User ${newState.member.user.username} joined trigger channel`);
                     const tempChannel = await this.channelManager.createTemporaryChannel(
                         newState.guild,
                         newState.member
                     );
                     if (tempChannel) {
-                        await newState.setChannel(tempChannel);
-                        console.log(`Created temporary channel ${tempChannel.name} for ${newState.member.user.username}`);
+                        try {
+                            await newState.member.voice.setChannel(tempChannel);
+                            console.log(`Moved ${newState.member.user.username} to temporary channel ${tempChannel.name}`);
+                        } catch (moveError) {
+                            console.error(`Failed to move member to temporary channel:`, moveError);
+                            if (moveError.code === 50013) {
+                                await tempChannel.send('Failed to move user - missing permissions');
+                            }
+                        }
                     }
                 }
 
                 // Handle user leaving any channel
-                if (oldState.channelId && this.channelManager.tempChannels.has(oldState.channelId)) {
-                    const channel = oldState.channel;
+                if (oldState.channel && this.channelManager.tempChannels.has(oldState.channelId)) {
+                    // Check if channel is empty
+                    const channel = oldState.guild.channels.cache.get(oldState.channelId);
                     if (channel && channel.members.size === 0) {
-                        await this.channelManager.deleteTemporaryChannel(channel);
-                        console.log(`Deleted empty temporary channel ${channel.name}`);
+                        try {
+                            await this.channelManager.deleteTemporaryChannel(channel);
+                            console.log(`Channel ${channel.name} deleted due to being empty`);
+                        } catch (deleteError) {
+                            console.error(`Failed to delete temporary channel:`, deleteError);
+                        }
                     }
                 }
             } catch (error) {
@@ -160,7 +212,6 @@ class VoiceChannelBot {
             }
         });
 
-        // Error handling
         this.client.on('error', error => {
             console.error('Discord client error:', error);
         });
