@@ -1,3 +1,8 @@
+git clone https://github.com/zzazuu/discord-auto-channel-bot.git
+```
+
+2. Install dependencies:
+```bash
 npm install
 ```
 
