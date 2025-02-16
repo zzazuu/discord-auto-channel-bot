@@ -31,3 +31,7 @@ args = "node bot.js"
 
 [deployment]
 run = ["sh", "-c", "node bot.js"]
+
+[[ports]]
+localPort = 3000
+externalPort = 80
